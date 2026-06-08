@@ -4,9 +4,9 @@ import io
 from PIL import Image, ImageFilter
 from supabase import create_client, Client
 
-# ===================== Supabase 配置（填写你自己的信息） =====================
-SUPABASE_URL = "https://xxx.supabase.co"  # 替换为你的项目URL
-SUPABASE_KEY = "你的anon public密钥"       # 替换为你的匿名密钥
+# ===================== Supabase 配置 =====================
+SUPABASE_URL = "https://xxx.supabase.co"   # 替换为你的地址
+SUPABASE_KEY = "你的anon public密钥"        # 替换为你的密钥
 BUCKET_NAME = "postcard-images"
 
 # 初始化Supabase客户端
@@ -16,9 +16,9 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 if 'flip_states' not in st.session_state:
     st.session_state.flip_states = {}
 
-# ===================== 图片处理：精准马赛克 =====================
+# ===================== 图片处理 =====================
 def blur_image(img: Image) -> Image:
-    """仅右下角小区域遮挡地址，不影响主体画面"""
+    """精准右下角马赛克"""
     w, h = img.size
     box = (int(w*0.65), int(h*0.72), w, h)
     region = img.crop(box)
@@ -26,8 +26,8 @@ def blur_image(img: Image) -> Image:
     img.paste(region, box)
     return img
 
-# 图片转为字节流（适配Supabase上传）
 def img_to_bytes(img: Image) -> io.BytesIO:
+    """图片转字节流，纯二进制无编码问题"""
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=90)
     buf.seek(0)
@@ -48,13 +48,14 @@ if st.button("✅ 提交保存"):
         st.error("请选择正面照片！")
     else:
         with st.spinner("正在上传至云端..."):
+            # 全程使用UUID命名，纯英文数字，彻底避开中文编码
             card_id = str(uuid.uuid4())
-            front_filename = f"{card_id}_front.jpg"
-            back_filename = f"{card_id}_back.jpg"
+            front_filename = f"{card}_front.jpg"
+            back_filename = f"{card}_back.jpg"
             front_url = ""
             back_url = ""
 
-            # 上传正面图（修复参数：使用file_options）
+            # 上传正面图
             try:
                 img_front = Image.open(front_file)
                 buf_front = img_to_bytes(img_front)
@@ -63,12 +64,12 @@ if st.button("✅ 提交保存"):
                     file=buf_front,
                     file_options={"content-type": "image/jpeg"}
                 )
-                front_url = supabase.storage.from_(BUCKET_NAME).get_public_url(front_filename)
+                front_url = supabase.storage.from_(front_filename).get_public_url(front_filename)
             except Exception as e:
                 st.error(f"正面图上传失败：{str(e)}")
                 st.stop()
 
-            # 处理并上传背面图（修复参数）
+            # 处理并上传背面图
             if back_file:
                 try:
                     img_back = Image.open(back_file)
@@ -79,11 +80,11 @@ if st.button("✅ 提交保存"):
                         file=buf_back,
                         file_options={"content-type": "image/jpeg"}
                     )
-                    back_url = supabase.storage.from_(BUCKET_NAME).get_public_url(back_filename)
+                    back_url = supabase.storage.from_(back_filename).get_public_url(back_filename)
                 except Exception as e:
                     st.error(f"背面图上传失败：{str(e)}")
 
-            # 写入云端数据库
+            # 写入数据库
             data = {
                 "id": card_id,
                 "front_url": front_url,
@@ -108,7 +109,7 @@ col_filter1, col_filter2, col_filter3 = st.columns(3)
 res = supabase.table("postcards").select("*").order("id", desc=True).execute()
 all_cards = res.data or []
 
-# 提取所有系列
+# 提取系列
 all_series = ["全部"]
 if all_cards:
     series_set = {item["series"] for item in all_cards}
@@ -121,7 +122,7 @@ with col_filter2:
 with col_filter3:
     search_text = st.text_input("关键词搜索（系列/寄出地）")
 
-# 数据过滤
+# 过滤数据
 filter_cards = []
 for item in all_cards:
     if select_series != "全部" and item["series"] != select_series:
@@ -134,7 +135,7 @@ for item in all_cards:
             continue
     filter_cards.append(item)
 
-# 明信片展示区（点击切换正反面）
+# 明信片展示区
 st.divider()
 st.subheader("📋 明信片列表（点击按钮切换正反面）")
 
@@ -153,13 +154,11 @@ else:
         r_time = item["receive_time"]
         rating = item["rating"]
 
-        # 初始化翻转状态
         if card_id not in st.session_state.flip_states:
             st.session_state.flip_states[card_id] = True
 
         with cols[idx % 3]:
             with st.container(border=True):
-                # 展示图片
                 if st.session_state.flip_states[card_id]:
                     st.image(front_url, use_column_width=True)
                 else:
@@ -168,18 +167,15 @@ else:
                     else:
                         st.write("无背面照片")
 
-                # 切换正反面按钮
                 if back_url:
                     if st.button("👆 切换正反面", key=f"flip_{card_id}"):
-                        st.session_state.flip_states[card_id] = not st.session_state.flip_states[card_id]
+                        st.session_state.flip_states[card_id]
 
-                # 信息展示
                 st.write(f"**{series}**")
                 st.caption(f"评级：{rating} / 5")
                 st.caption(f"寄出：{s_place} {s_time}")
                 st.caption(f"收件：{r_place} {r_time}")
 
-                # 编辑 & 删除
                 col_btn1, col_btn2 = st.columns(2)
                 with col_btn1:
                     if st.button("✏️ 编辑", key=f"edit_{card_id}"):
@@ -206,12 +202,10 @@ else:
                 with col_btn2:
                     if st.button("🗑️ 删除", key=f"del_{card_id}"):
                         with st.spinner("删除中..."):
-                            # 删除云端图片
                             if front_url:
                                 supabase.storage.from_(BUCKET_NAME).remove([f"{card_id}_front.jpg"])
                             if back_url:
                                 supabase.storage.from_(BUCKET_NAME).remove([f"{card_id}_back.jpg"])
-                            # 删除数据表记录
-                            supabase.table("postcards").delete().eq("id", card_id).execute()
+                            supabase.table("postcards").delete().eq("id").execute()
                             st.success("已删除！")
                             st.rerun()
