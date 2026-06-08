@@ -1,24 +1,24 @@
 import streamlit as st
 import uuid
-from PIL import Image, ImageFilter
 import io
+from PIL import Image, ImageFilter
 from supabase import create_client, Client
 
-# ===================== 1. Supabase 配置（替换成你自己的信息） =====================
-SUPABASE_URL = "https://afkeeqiongqqyhbxxltp.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFma2VlcWlvbmdxcXloYnh4bHRwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA5MTU1NDAsImV4cCI6MjA5NjQ5MTU0MH0.JOo0rsNfJcPSxlvUdMnCuCvMUdmN2CR1wL-G8uo_lEM"
+# ===================== Supabase 配置（填写你自己的信息） =====================
+SUPABASE_URL = "https://xxx.supabase.co"  # 替换为你的项目URL
+SUPABASE_KEY = "你的anon public密钥"       # 替换为你的匿名密钥
 BUCKET_NAME = "postcard-images"
 
 # 初始化Supabase客户端
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# 初始化页面状态
+# 初始化卡片翻转状态
 if 'flip_states' not in st.session_state:
     st.session_state.flip_states = {}
 
-# ===================== 2. 图片处理：精准马赛克 =====================
+# ===================== 图片处理：精准马赛克 =====================
 def blur_image(img: Image) -> Image:
-    """仅右下角小区域模糊，不遮挡主体"""
+    """仅右下角小区域遮挡地址，不影响主体画面"""
     w, h = img.size
     box = (int(w*0.65), int(h*0.72), w, h)
     region = img.crop(box)
@@ -26,18 +26,18 @@ def blur_image(img: Image) -> Image:
     img.paste(region, box)
     return img
 
-# 图片转字节流（用于上传云存储）
+# 图片转为字节流（适配Supabase上传）
 def img_to_bytes(img: Image) -> io.BytesIO:
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=90)
     buf.seek(0)
     return buf
 
-# ===================== 3. 页面主体 =====================
+# ===================== 页面主体 =====================
 st.set_page_config(page_title="极限明信片管理", layout="wide")
 st.title("📮 极限明信片管理系统（云端永久存储）")
 
-# -------- 上传区域 --------
+# 上传区域
 st.subheader("上传新明信片")
 col_up1, col_up2 = st.columns(2)
 front_file = col_up1.file_uploader("正面照片", type=["jpg","jpeg","png"])
@@ -54,21 +54,21 @@ if st.button("✅ 提交保存"):
             front_url = ""
             back_url = ""
 
-            # 上传正面图
+            # 上传正面图（修复参数：使用file_options）
             try:
                 img_front = Image.open(front_file)
                 buf_front = img_to_bytes(img_front)
                 supabase.storage.from_(BUCKET_NAME).upload(
                     path=front_filename,
                     file=buf_front,
-                    content_type="image/jpeg"
+                    file_options={"content-type": "image/jpeg"}
                 )
                 front_url = supabase.storage.from_(BUCKET_NAME).get_public_url(front_filename)
             except Exception as e:
                 st.error(f"正面图上传失败：{str(e)}")
                 st.stop()
 
-            # 处理并上传背面图
+            # 处理并上传背面图（修复参数）
             if back_file:
                 try:
                     img_back = Image.open(back_file)
@@ -77,13 +77,13 @@ if st.button("✅ 提交保存"):
                     supabase.storage.from_(BUCKET_NAME).upload(
                         path=back_filename,
                         file=buf_back,
-                        content_type="image/jpeg"
+                        file_options={"content-type": "image/jpeg"}
                     )
                     back_url = supabase.storage.from_(BUCKET_NAME).get_public_url(back_filename)
                 except Exception as e:
                     st.error(f"背面图上传失败：{str(e)}")
 
-            # 写入云端数据表
+            # 写入云端数据库
             data = {
                 "id": card_id,
                 "front_url": front_url,
@@ -99,7 +99,7 @@ if st.button("✅ 提交保存"):
             st.success("🎉 上传成功，数据已永久保存！")
             st.rerun()
 
-# -------- 筛选 & 搜索区域 --------
+# 筛选 & 搜索区域
 st.divider()
 st.subheader("🔍 筛选 / 搜索")
 col_filter1, col_filter2, col_filter3 = st.columns(3)
@@ -134,7 +134,7 @@ for item in all_cards:
             continue
     filter_cards.append(item)
 
-# -------- 明信片展示区（点击切换正反面） --------
+# 明信片展示区（点击切换正反面）
 st.divider()
 st.subheader("📋 明信片列表（点击按钮切换正反面）")
 
@@ -168,11 +168,10 @@ else:
                     else:
                         st.write("无背面照片")
 
-                # 切换按钮
+                # 切换正反面按钮
                 if back_url:
                     if st.button("👆 切换正反面", key=f"flip_{card_id}"):
                         st.session_state.flip_states[card_id] = not st.session_state.flip_states[card_id]
-                        st.rerun()
 
                 # 信息展示
                 st.write(f"**{series}**")
