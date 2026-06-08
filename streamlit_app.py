@@ -1,66 +1,43 @@
 import streamlit as st
-import sqlite3
-import os
 import uuid
 from PIL import Image, ImageFilter
+import io
+from supabase import create_client, Client
 
-# 基础配置
-UPLOAD_FOLDER = "uploads"
-DB_PATH = "postcards.db"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+# ===================== 1. Supabase 配置（替换成你自己的信息） =====================
+SUPABASE_URL = "afkeeqiongqqyhbxxltp"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFma2VlcWlvbmdxcXloYnh4bHRwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA5MTU1NDAsImV4cCI6MjA5NjQ5MTU0MH0.JOo0rsNfJcPSxlvUdMnCuCvMUdmN2CR1wL-G8uo_lEM"
+BUCKET_NAME = "postcard-images"
 
-# 初始化卡片翻转状态
+# 初始化Supabase客户端
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# 初始化页面状态
 if 'flip_states' not in st.session_state:
     st.session_state.flip_states = {}
 
-# 数据库初始化
-def init_db():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    c = conn.cursor()
-    c.execute('''
-    CREATE TABLE IF NOT EXISTS postcards (
-        id TEXT PRIMARY KEY,
-        front_path TEXT,
-        back_path TEXT,
-        series TEXT DEFAULT '未分类',
-        send_place TEXT DEFAULT '未知',
-        send_time TEXT DEFAULT '未知',
-        receive_place TEXT DEFAULT '未知',
-        receive_time TEXT DEFAULT '未知',
-        rating INTEGER DEFAULT 0
-    )
-    ''')
-    conn.commit()
-    return conn
+# ===================== 2. 图片处理：精准马赛克 =====================
+def blur_image(img: Image) -> Image:
+    """仅右下角小区域模糊，不遮挡主体"""
+    w, h = img.size
+    box = (int(w*0.65), int(h*0.72), w, h)
+    region = img.crop(box)
+    region = region.filter(ImageFilter.GaussianBlur(radius=20))
+    img.paste(region, box)
+    return img
 
-conn = init_db()
+# 图片转字节流（用于上传云存储）
+def img_to_bytes(img: Image) -> io.BytesIO:
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=90)
+    buf.seek(0)
+    return buf
 
-# 精准马赛克（仅右下角小区域，不遮挡主体画面）
-def blur_image(input_path, output_path):
-    try:
-        img = Image.open(input_path)
-        w, h = img.size
-        # 仅右下角小范围，专门遮挡地址
-        box = (int(w*0.65), int(h*0.72), w, h)
-        region = img.crop(box)
-        region = region.filter(ImageFilter.GaussianBlur(radius=20))
-        img.paste(region, box)
-        img.save(output_path)
-        return True
-    except Exception as e:
-        st.warning(f"图片处理失败: {e}")
-        return False
-
-# 保存上传文件
-def save_file(uploaded_file, save_path):
-    with open(save_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-
-# 页面全局配置
+# ===================== 3. 页面主体 =====================
 st.set_page_config(page_title="极限明信片管理", layout="wide")
-st.title("📮 极限明信片管理系统")
+st.title("📮 极限明信片管理系统（云端永久存储）")
 
-# ===================== 上传区域 =====================
+# -------- 上传区域 --------
 st.subheader("上传新明信片")
 col_up1, col_up2 = st.columns(2)
 front_file = col_up1.file_uploader("正面照片", type=["jpg","jpeg","png"])
@@ -70,51 +47,72 @@ if st.button("✅ 提交保存"):
     if not front_file:
         st.error("请选择正面照片！")
     else:
-        with st.spinner("处理中..."):
+        with st.spinner("正在上传至云端..."):
             card_id = str(uuid.uuid4())
-            # 保存正面
-            front_name = f"{card_id}_front.jpg"
-            front_path = os.path.join(UPLOAD_FOLDER, front_name)
-            save_file(front_file, front_path)
+            front_filename = f"{card_id}_front.jpg"
+            back_filename = f"{card_id}_back.jpg"
+            front_url = ""
+            back_url = ""
 
-            # 处理背面+马赛克
-            back_path = None
+            # 上传正面图
+            try:
+                img_front = Image.open(front_file)
+                buf_front = img_to_bytes(img_front)
+                supabase.storage.from_(BUCKET_NAME).upload(
+                    path=front_filename,
+                    file=buf_front,
+                    content_type="image/jpeg"
+                )
+                front_url = supabase.storage.from_(BUCKET_NAME).get_public_url(front_filename)
+            except Exception as e:
+                st.error(f"正面图上传失败：{str(e)}")
+                st.stop()
+
+            # 处理并上传背面图
             if back_file:
-                back_raw_name = f"{card_id}_raw.jpg"
-                back_raw_path = os.path.join(UPLOAD_FOLDER, back_raw_name)
-                save_file(back_file, back_raw_path)
+                try:
+                    img_back = Image.open(back_file)
+                    img_back_blur = blur_image(img_back)
+                    buf_back = img_to_bytes(img_back_blur)
+                    supabase.storage.from_(BUCKET_NAME).upload(
+                        path=back_filename,
+                        file=buf_back,
+                        content_type="image/jpeg"
+                    )
+                    back_url = supabase.storage.from_(BUCKET_NAME).get_public_url(back_filename)
+                except Exception as e:
+                    st.error(f"背面图上传失败：{str(e)}")
 
-                back_name = f"{card_id}_back.jpg"
-                back_path = os.path.join(UPLOAD_FOLDER)
-                back_path = os.path.join(UPLOAD_FOLDER, back_name)
-                blur_image(back_raw_path, back_path)
-                os.remove(back_raw_path)
+            # 写入云端数据表
+            data = {
+                "id": card_id,
+                "front_url": front_url,
+                "back_url": back_url,
+                "series": "未分类",
+                "send_place": "未知",
+                "send_time": "未知",
+                "receive_place": "未知",
+                "receive_time": "未知",
+                "rating": 0
+            }
+            supabase.table("postcards").insert(data).execute()
+            st.success("🎉 上传成功，数据已永久保存！")
+            st.rerun()
 
-            # 写入数据库
-            c = conn.cursor()
-            c.execute(
-                "INSERT INTO postcards (id, front_path, back_path) VALUES (?,?,?)",
-                (card_id, front_path, back_path)
-            )
-            conn.commit()
-        st.success("🎉 上传成功！")
-        st.rerun()
-
-# ===================== 筛选 & 搜索区域（新增） =====================
+# -------- 筛选 & 搜索区域 --------
 st.divider()
 st.subheader("🔍 筛选 / 搜索")
 col_filter1, col_filter2, col_filter3 = st.columns(3)
 
-# 读取全量数据
-c = conn.cursor()
-c.execute("SELECT * FROM postcards ORDER BY rowid DESC")
-all_cards = c.fetchall()
+# 拉取全量数据
+res = supabase.table("postcards").select("*").order("id", desc=True).execute()
+all_cards = res.data or []
 
-# 提取所有已有系列（用于下拉筛选）
+# 提取所有系列
 all_series = ["全部"]
 if all_cards:
-    series_list = list({card[3] for card in all_cards})
-    all_series.extend(series_list)
+    series_set = {item["series"] for item in all_cards}
+    all_series.extend(series_set)
 
 with col_filter1:
     select_series = st.selectbox("按系列筛选", all_series)
@@ -123,36 +121,37 @@ with col_filter2:
 with col_filter3:
     search_text = st.text_input("关键词搜索（系列/寄出地）")
 
-# 过滤数据
+# 数据过滤
 filter_cards = []
-for card in all_cards:
-    c_id, f_path, b_path, series, s_place, s_time, r_place, r_time, rating = card
-    # 系列过滤
-    if select_series != "全部" and series != select_series:
+for item in all_cards:
+    if select_series != "全部" and item["series"] != select_series:
         continue
-    # 评级过滤
-    if select_rating != "全部":
-        target_star = int(select_rating[0])
-        if rating != target_star:
-            continue
-    # 关键词搜索
+    if select_rating != "全部" and item["rating"] != int(select_rating[0]):
+        continue
     if search_text.strip():
         kw = search_text.lower()
-        if kw not in series.lower() and kw not in s_place.lower():
+        if kw not in item["series"].lower() and kw not in item["send_place"].lower():
             continue
-    filter_cards.append(card)
+    filter_cards.append(item)
 
-# ===================== 明信片展示区（点击切换正反面） =====================
+# -------- 明信片展示区（点击切换正反面） --------
 st.divider()
 st.subheader("📋 明信片列表（点击按钮切换正反面）")
 
 if not filter_cards:
     st.info("暂无匹配的明信片")
 else:
-    # 瀑布流：一行3列
     cols = st.columns(3)
     for idx, item in enumerate(filter_cards):
-        card_id, front_path, back_path, series, s_place, s_time, r_place, r_time, rating = item
+        card_id = item["id"]
+        front_url = item["front_url"]
+        back_url = item["back_url"]
+        series = item["series"]
+        s_place = item["send_place"]
+        s_time = item["send_time"]
+        r_place = item["receive_place"]
+        r_time = item["receive_time"]
+        rating = item["rating"]
 
         # 初始化翻转状态
         if card_id not in st.session_state.flip_states:
@@ -162,16 +161,15 @@ else:
             with st.container(border=True):
                 # 展示图片
                 if st.session_state.flip_states[card_id]:
-                    if os.path.exists(front_path):
-                        st.image(front_path, use_column_width=True)
+                    st.image(front_url, use_column_width=True)
                 else:
-                    if back_path and os.path.exists(back_path):
-                        st.image(back_path, use_column_width=True)
+                    if back_url:
+                        st.image(back_url, use_column_width=True)
                     else:
                         st.write("无背面照片")
 
-                # 切换正反面按钮
-                if back_path:
+                # 切换按钮
+                if back_url:
                     if st.button("👆 切换正反面", key=f"flip_{card_id}"):
                         st.session_state.flip_states[card_id] = not st.session_state.flip_states[card_id]
                         st.rerun()
@@ -182,7 +180,7 @@ else:
                 st.caption(f"寄出：{s_place} {s_time}")
                 st.caption(f"收件：{r_place} {r_time}")
 
-                # 编辑 + 删除 按钮
+                # 编辑 & 删除
                 col_btn1, col_btn2 = st.columns(2)
                 with col_btn1:
                     if st.button("✏️ 编辑", key=f"edit_{card_id}"):
@@ -195,25 +193,26 @@ else:
                             new_r_time = st.text_input("收件时间", value=r_time, key=f"rtm_{card_id}")
 
                             if st.button("💾 保存", key=f"save_{card_id}"):
-                                c_update = conn.cursor()
-                                c_update.execute('''
-                                UPDATE postcards 
-                                SET series=?, rating=?, send_place=?, send_time=?, receive_place=?, receive_time=?
-                                WHERE id=?
-                                ''', (new_series, new_rating, new_s_place, new_s_time, new_r_place, new_r_time, card_id))
-                                conn.commit()
-                                st.success("信息已更新")
+                                update_data = {
+                                    "series": new_series,
+                                    "rating": new_rating,
+                                    "send_place": new_s_place,
+                                    "send_time": new_s_time,
+                                    "receive_place": new_r_place,
+                                    "receive_time": new_r_time
+                                }
+                                supabase.table("postcards").update(update_data).eq("id", card_id).execute()
+                                st.success("信息已更新！")
                                 st.rerun()
                 with col_btn2:
                     if st.button("🗑️ 删除", key=f"del_{card_id}"):
-                        # 删除图片文件
-                        if os.path.exists(front_path):
-                            os.remove(front_path)
-                        if back_path and os.path.exists(back_path):
-                            os.remove(back_path)
-                        # 删除数据库记录
-                        c_del = conn.cursor()
-                        c_del.execute("DELETE FROM postcards WHERE id=?", (card_id,))
-                        conn.commit()
-                        st.success("已删除")
-                        st.rerun()
+                        with st.spinner("删除中..."):
+                            # 删除云端图片
+                            if front_url:
+                                supabase.storage.from_(BUCKET_NAME).remove([f"{card_id}_front.jpg"])
+                            if back_url:
+                                supabase.storage.from_(BUCKET_NAME).remove([f"{card_id}_back.jpg"])
+                            # 删除数据表记录
+                            supabase.table("postcards").delete().eq("id", card_id).execute()
+                            st.success("已删除！")
+                            st.rerun()
