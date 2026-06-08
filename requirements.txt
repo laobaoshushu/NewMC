@@ -1,3 +1,4 @@
 streamlit>=1.35
 Pillow
 numpy
+supabase>=2.0
