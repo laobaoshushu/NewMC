@@ -1,11 +1,12 @@
 import streamlit as st
 import uuid
 import io
+import requests
 from PIL import Image, ImageFilter
 from supabase import create_client, Client
 
 # ===================== Supabase 配置（替换为你自己的信息） =====================
-SUPABASE_URL = "https://xxx.supabase.co"
+SUPABASE_URL = "https://你的项目名.supabase.co"
 SUPABASE_KEY = "你的anon public密钥"
 BUCKET_NAME = "postcard-images"
 
@@ -16,9 +17,9 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 if 'flip_states' not in st.session_state:
     st.session_state.flip_states = {}
 
-# ===================== 图片处理函数 =====================
+# ===================== 图片处理：精准马赛克 =====================
 def blur_image(img: Image) -> Image:
-    """精准右下角马赛克，遮挡地址"""
+    """仅右下角小区域遮挡地址，不影响主体画面"""
     w, h = img.size
     box = (int(w*0.65), int(h*0.72), w, h)
     region = img.crop(box)
@@ -26,12 +27,17 @@ def blur_image(img: Image) -> Image:
     img.paste(region, box)
     return img
 
-def img_to_bytes(img: Image) -> io.BytesIO:
-    """图片转二进制流，适配云端上传"""
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=90)
-    buf.seek(0)
-    return buf
+# ===================== 云端上传工具函数（Requests直连，彻底解决编码问题） =====================
+def upload_to_supabase(bucket_name, file_name, file_bytes, content_type="image/jpeg"):
+    """使用requests直接调用Supabase API上传文件，绕过SDK编码bug"""
+    url = f"{SUPABASE_URL}/storage/v1/object/{bucket_name}/{file_name}"
+    headers = {
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": content_type
+    }
+    response = requests.post(url, headers=headers, data=file_bytes)
+    response.raise_for_status()
+    return f"{SUPABASE_URL}/storage/v1/object/public/{bucket_name}/{file_name}"
 
 # ===================== 页面主体 =====================
 st.set_page_config(page_title="极限明信片管理", layout="wide")
@@ -48,40 +54,36 @@ if st.button("✅ 提交保存"):
         st.error("请选择正面照片！")
     else:
         with st.spinner("正在上传至云端..."):
-            # 修正变量名：统一使用 card_id
+            # 全程使用UUID命名，纯英文数字，彻底避开中文编码
             card_id = str(uuid.uuid4())
             front_filename = f"{card_id}_front.jpg"
             back_filename = f"{card_id}_back.jpg"
             front_url = ""
             back_url = ""
 
-            # 上传正面图
+            # 上传正面图（Requests直连）
             try:
-                # 兼容中文文件名/特殊字符
-                img_front = Image.open(io.BytesIO(front_file.read()))
-                buf_front = img_to_bytes(img_front)
-                supabase.storage.from_(BUCKET_NAME).upload(
-                    path=front_filename,
-                    file=buf_front,
-                    file_options={"content-type": "image/jpeg"}
-                )
-                front_url = supabase.storage.from_(BUCKET_NAME).get_public_url(front_filename)
+                # 直接读取二进制，不做任何编码转换
+                front_bytes = front_file.read()
+                # 上传
+                front_url = upload_to_supabase(BUCKET_NAME, front_filename, front_bytes)
             except Exception as e:
                 st.error(f"正面图上传失败：{str(e)}")
                 st.stop()
 
-            # 处理并上传背面图
+            # 处理并上传背面图（Requests直连）
             if back_file:
                 try:
+                    # 先处理马赛克
                     img_back = Image.open(io.BytesIO(back_file.read()))
                     img_back_blur = blur_image(img_back)
-                    buf_back = img_to_bytes(img_back_blur)
-                    supabase.storage.from_(BUCKET_NAME).upload(
-                        path=back_filename,
-                        file=buf_back,
-                        file_options={"content-type": "image/jpeg"}
-                    )
-                    back_url = supabase.storage.from_(BUCKET_NAME).get_public_url(back_filename)
+                    # 转为二进制
+                    buf_back = io.BytesIO()
+                    img_back_blur.save(buf_back, format="JPEG", quality=90)
+                    buf_back.seek(0)
+                    back_bytes = buf_back.read()
+                    # 上传
+                    back_url = upload_to_supabase(BUCKET_NAME, back_filename, back_bytes)
                 except Exception as e:
                     st.error(f"背面图上传失败：{str(e)}")
 
@@ -208,11 +210,14 @@ else:
                 with col_btn2:
                     if st.button("🗑️ 删除", key=f"del_{card_id}"):
                         with st.spinner("删除中..."):
-                            # 删除云端图片
+                            # 删除云端图片（直接调用API）
                             if front_url:
-                                supabase.storage.from_(BUCKET_NAME).remove([f"{card_id}_front.jpg"])
+                                del_url = f"{SUPABASE_URL}/storage/v1/object/{BUCKET_NAME}/{card_id}_front.jpg"
+                                requests.delete(del_url, headers={"Authorization": f"Bearer {SUPABASE_KEY}"})
                             if back_url:
-                                supabase.storage.from_(BUCKET_NAME).remove([f"{card_id}_back.jpg"])
+                                del_url = f"{SUPABASE_URL}/storage/v1/object/{BUCKET_NAME}/{card_id}_back.jpg"
+                                requests.delete(del_url, headers={"Authorization": f"Bearer {SUPABASE_KEY}"})
                             # 删除数据库记录
                             supabase.table("postcards").delete().eq("id", card_id).execute()
                             st.success("已删除！")
+                            st.rerun()
