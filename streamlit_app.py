@@ -5,7 +5,7 @@ import io
 from supabase import create_client, Client
 
 # ===================== 1. Supabase 配置（替换成你自己的信息） =====================
-SUPABASE_URL = "afkeeqiongqqyhbxxltp"
+SUPABASE_URL = "https://afkeeqiongqqyhbxxltp.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFma2VlcWlvbmdxcXloYnh4bHRwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA5MTU1NDAsImV4cCI6MjA5NjQ5MTU0MH0.JOo0rsNfJcPSxlvUdMnCuCvMUdmN2CR1wL-G8uo_lEM"
 BUCKET_NAME = "postcard-images"
 
