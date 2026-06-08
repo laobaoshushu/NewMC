@@ -9,7 +9,7 @@ UPLOAD_FOLDER = "uploads"
 DB_PATH = "postcards.db"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# 初始化数据库
+# 初始化数据库（新增字段）
 def init_db():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     c = conn.cursor()
@@ -31,15 +31,15 @@ def init_db():
 
 conn = init_db()
 
-# Pillow 实现图片模糊（替代 OpenCV，遮挡地址）
+# 改进版模糊函数（覆盖更全）
 def blur_image(input_path, output_path):
     try:
         img = Image.open(input_path)
         w, h = img.size
-        # 截取右下角区域做模糊（地址区）
-        box = (int(w*0.5), int(h*0.6), w, h)
+        # 扩大模糊区域，覆盖绝大多数地址位置
+        box = (int(w*0.3), int(h*0.5), w, h)
         region = img.crop(box)
-        region = region.filter(ImageFilter.GaussianBlur(radius=15))
+        region = region.filter(ImageFilter.GaussianBlur(radius=20))
         img.paste(region, box)
         img.save(output_path)
         return True
@@ -47,7 +47,6 @@ def blur_image(input_path, output_path):
         st.warning(f"图片处理失败: {e}")
         return False
 
-# 保存上传文件
 def save_file(uploaded_file, save_path):
     with open(save_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
@@ -94,9 +93,9 @@ if st.button("✅ 提交保存"):
         st.success("🎉 明信片上传成功！")
         st.rerun()
 
-# 展示&管理区域
+# 编辑/查看区域
 st.divider()
-st.subheader("明信片列表")
+st.subheader("明信片列表与编辑")
 c = conn.cursor()
 c.execute("SELECT * FROM postcards ORDER BY rowid DESC")
 cards = c.fetchall()
@@ -120,13 +119,33 @@ else:
                 st.write(f"ID: {card_id}")
                 st.write(f"系列: {series} | 评级: {rating}/5")
                 st.write(f"寄出: {send_place} {send_time} | 收件: {rec_place} {rec_time}")
+                
+                # 编辑按钮
+                if st.button("✏️ 编辑", key=f"edit_{card_id}"):
+                    with st.expander("编辑信息", expanded=True):
+                        new_series = st.text_input("系列/分类", value=series, key=f"series_{card_id}")
+                        new_rating = st.slider("评级", 0, 5, value=rating, key=f"rating_{card_id}")
+                        new_send_place = st.text_input("寄出地", value=send_place, key=f"send_place_{card_id}")
+                        new_send_time = st.text_input("寄出时间", value=send_time, key=f"send_time_{card_id}")
+                        new_rec_place = st.text_input("收件地", value=rec_place, key=f"rec_place_{card_id}")
+                        new_rec_time = st.text_input("收件时间", value=rec_time, key=f"rec_time_{card_id}")
+                        
+                        if st.button("💾 保存修改", key=f"save_{card_id}"):
+                            c.execute('''
+                            UPDATE postcards 
+                            SET series=?, rating=?, send_place=?, send_time=?, receive_place=?, receive_time=?
+                            WHERE id=?
+                            ''', (new_series, new_rating, new_send_place, new_send_time, new_rec_place, new_rec_time, card_id))
+                            conn.commit()
+                            st.success("信息已更新！")
+                            st.rerun()
+                
+                # 删除按钮
                 if st.button("🗑️ 删除", key=f"del_{card_id}"):
-                    # 删除本地文件
                     if os.path.exists(front_path):
                         os.remove(front_path)
                     if back_path and os.path.exists(back_path):
                         os.remove(back_path)
-                    # 删除数据库记录
                     c.execute("DELETE FROM postcards WHERE id=?", (card_id,))
                     conn.commit()
                     st.success("已删除")
